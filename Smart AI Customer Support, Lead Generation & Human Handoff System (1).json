@@ -1,0 +1,1073 @@
+{
+  "name": "Smart AI Customer Support, Lead Generation & Human Handoff System",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "facebook-messenger-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "2c810105-7f0a-42a2-aa62-aaba149f8684",
+      "name": "Facebook Verification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        656,
+        464
+      ],
+      "webhookId": "facebook-messenger-webhook-verify",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "multipleMethods": true,
+        "httpMethod": [],
+        "path": "facebook-messenger-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e0513ac9-8b85-4225-a4a5-2033781a1877",
+      "name": "Facebook Message Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        -144,
+        736
+      ],
+      "webhookId": "facebook-messenger-webhook-message",
+      "typeVersion": 2,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "verify-token",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.query['hub.verify_token'] }}",
+              "rightValue": "YOUR_VERIFY_TOKEN_HERE"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c5e1ed88-b5ba-48f4-8d2a-910d8007fe6b",
+      "name": "Is Token Valid?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        960,
+        464
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] }}",
+        "options": {}
+      },
+      "id": "8b96ebca-67de-441a-b33d-a48bf46dc139",
+      "name": "Respond with Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        1200,
+        320
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Verification failed",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "ab5791db-2afb-4eee-94d8-cacf5a71be1d",
+      "name": "Respond Forbidden",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        1200,
+        544
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "EVENT_RECEIVED",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "1312d3b0-0b64-49c1-b867-200a2f4e15c1",
+      "name": "Acknowledge Event",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        96,
+        736
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "has-message",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              },
+              "leftValue": "={{ $json.body?.entry?.[0]?.messaging?.[0]?.message?.text }}",
+              "rightValue": ""
+            },
+            {
+              "id": "not-echo",
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              },
+              "leftValue": "={{ $json.body?.entry?.[0]?.messaging?.[0]?.message?.is_echo }}",
+              "rightValue": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6c2c612e-290f-4e50-b229-82162d18054e",
+      "name": "Filter Valid Messages",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        352,
+        736
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract message data from Facebook webhook.\nconst entry = $input.first().json.body?.entry?.[0];\nconst messaging = entry?.messaging?.[0];\nconst userId = messaging?.sender?.id;\nconst pageId = messaging?.recipient?.id;\nconst messageText = messaging?.message?.text;\nconst timestamp = messaging?.timestamp || Date.now();\nconst messageId = messaging?.message?.mid;\nconst sessionKey = `${userId}:${pageId}`;\nconst staticData = $getWorkflowStaticData('global');\n\n// Pause AI while a human handoff is active.\nif (!staticData.handoffSessions) staticData.handoffSessions = {};\nconst handoff = staticData.handoffSessions[sessionKey];\nif (handoff) {\n  if (Number(handoff.until) > Date.now()) {\n    return { json: { userId, pageId, messageText, timestamp, messageId, skip: true, handoff_active: true } };\n  }\n  delete staticData.handoffSessions[sessionKey];\n}\n\n// Avoid re-processing duplicate Meta webhook deliveries for a short retention window.\nif (!staticData.recentMessageIds) staticData.recentMessageIds = {};\nconst cutoff = Date.now() - 10 * 60 * 1000;\nfor (const [id, seenAt] of Object.entries(staticData.recentMessageIds)) {\n  if (Number(seenAt) < cutoff) delete staticData.recentMessageIds[id];\n}\nif (messageId && staticData.recentMessageIds[messageId]) {\n  return { json: { userId, pageId, messageText, timestamp, messageId, skip: true, duplicate: true } };\n}\nif (messageId) staticData.recentMessageIds[messageId] = Date.now();\n\nif (!staticData.messageBatches) staticData.messageBatches = {};\nif (!staticData.messageBatches[sessionKey]) {\n  staticData.messageBatches[sessionKey] = {\n    messages: [],\n    firstMessageTime: timestamp,\n    pageId\n  };\n}\n\nstaticData.messageBatches[sessionKey].messages.push({\n  text: messageText,\n  timestamp,\n  messageId\n});\n\nreturn {\n  json: {\n    userId,\n    pageId,\n    messageText,\n    timestamp,\n    messageId,\n    sessionKey,\n    batchCount: staticData.messageBatches[sessionKey].messages.length,\n    skip: false\n  }\n};"
+      },
+      "id": "2b23f429-965d-4ea0-9437-9936b3fc5ac5",
+      "name": "Store Message for Batching",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        592,
+        720
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v26.0/me/messages",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"recipient\": {\n    \"id\": \"{{ $json.userId }}\"\n  },\n  \"sender_action\": \"mark_seen\"\n}",
+        "options": {}
+      },
+      "id": "931351ae-94a6-42a8-87eb-aaf37513a5dd",
+      "name": "Send Seen Indicator",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        848,
+        720
+      ],
+      "typeVersion": 4.2,
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "executeOnce": false,
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "id": "a67335e8-b861-4e86-ad86-1c602e32a89f",
+      "name": "Wait 3 Seconds",
+      "type": "n8n-nodes-base.wait",
+      "position": [
+        1104,
+        720
+      ],
+      "webhookId": "wait-batch",
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retrieve the complete message batch and attach the cached customer profile.\nconst store = $('Store Message for Batching').first().json;\nconst userId = store.userId;\nconst pageId = store.pageId;\nconst sessionKey = `${userId}:${pageId}`;\nconst staticData = $getWorkflowStaticData('global');\n\nif (!staticData.handoffSessions) staticData.handoffSessions = {};\nconst handoff = staticData.handoffSessions[sessionKey];\nif (handoff) {\n  if (Number(handoff.until) > Date.now()) {\n    return { json: { userId, pageId, sessionKey, skip: true, handoff_active: true } };\n  }\n  delete staticData.handoffSessions[sessionKey];\n}\n\nif (!staticData.messageBatches) staticData.messageBatches = {};\nconst userBatch = staticData.messageBatches[sessionKey];\nif (!userBatch || userBatch.messages.length === 0) {\n  return { json: { userId, pageId, sessionKey, skip: true } };\n}\n\nconst combinedMessage = userBatch.messages\n  .sort((a, b) => a.timestamp - b.timestamp)\n  .map(m => m.text)\n  .filter(Boolean)\n  .join(' ');\n\ndelete staticData.messageBatches[sessionKey];\n\nif (!staticData.customerProfiles) staticData.customerProfiles = {};\nconst customerProfile = staticData.customerProfiles[sessionKey] || {};\n\nreturn {\n  json: {\n    userId,\n    pageId,\n    sessionKey,\n    combinedMessage,\n    messageCount: userBatch.messages.length,\n    customerProfile,\n    customer_profile_context: JSON.stringify(customerProfile),\n    skip: false\n  }\n};"
+      },
+      "id": "73f7cde0-8d83-4272-97b9-35e05627c567",
+      "name": "Retrieve Batched Messages",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1328,
+        720
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "not-skip",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a19722e2-e38c-4cad-ba63-2b1e10f912ed",
+      "name": "Has Messages to Process?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        -128,
+        1024
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v26.0/me/messages",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"recipient\": {\n    \"id\": \"{{ $json.userId }}\"\n  },\n  \"sender_action\": \"typing_on\"\n}",
+        "options": {}
+      },
+      "id": "2a6c1f6f-c3b7-47fd-9eca-6fbc174ea68b",
+      "name": "Send Typing Indicator",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        176,
+        1008
+      ],
+      "typeVersion": 4.2,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Retrieve Batched Messages').first().json.userId }}",
+        "contextWindowLength": 50
+      },
+      "id": "63d11f2f-4bf9-4dcd-ab95-d3295c3f7d15",
+      "name": "Conversation Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "position": [
+        960,
+        1216
+      ],
+      "typeVersion": 1.3
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini",
+          "cachedResultName": "gpt-5-mini"
+        },
+        "options": {}
+      },
+      "id": "6bb54481-5265-419d-a161-af3784ace6a9",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "position": [
+        576,
+        1216
+      ],
+      "typeVersion": 1.2,
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Retrieve Batched Messages').first().json.combinedMessage }}",
+        "options": {
+          "systemMessage": "You are a professional AI business assistant for a Facebook Messenger channel.\n\nBUSINESS KNOWLEDGE + CONFIGURATION\nThe active rows below come from the client's internal n8n Data Table. Rows marked [config] are configuration values; rows marked [kb] are factual business knowledge.\n{{ $('Load Business Knowledge Base').all().map(item => {\n  const r = item.json || {};\n  return `[${r.record_type || 'data'}] ${r.category || r.record_key || 'general'}: ${r.content || ''}`;\n}).join('\\n') || 'NO BUSINESS KNOWLEDGE IS CONFIGURED. Never invent business facts.' }}\n\nEXISTING CUSTOMER PROFILE\n{{ $('Retrieve Batched Messages').first().json.customer_profile_context || '{}' }}\n\nCORE RULES\n1. Answer the customer's actual message naturally, briefly, and professionally.\n2. Use only factual business information contained in the active knowledge/config rows or the conversation history.\n3. Never invent prices, policies, stock, delivery times, appointments, guarantees, or other business facts.\n4. Maintain context and respect the existing customer profile. Do not erase known customer details when the current message does not provide them.\n5. Messenger replies should stay concise and under 1900 characters.\n6. When the customer asks for a human, requests a refund/complaint decision, raises payment/legal/security concerns, or the required business fact is missing, route to human.\n7. Sales/product/pricing/buying intent should route to sales.\n8. General questions that can be answered from the business knowledge base should route to support.\n\nINTENT ENUM\nsales, product_inquiry, pricing, order, booking, support, complaint, refund, faq, human_request, spam, other\n\nOUTPUT\nReturn ONLY one valid JSON object. No markdown, no code fences, no extra text.\n{\n  \"response\": \"customer-facing reply\",\n  \"intent\": \"one enum value\",\n  \"route\": \"sales | support | human\",\n  \"needs_human\": false,\n  \"handoff_reason\": \"empty unless human handoff is needed\",\n  \"lead\": {\n    \"name\": \"\",\n    \"email\": \"\",\n    \"phone\": \"\",\n    \"interest\": \"\",\n    \"budget\": \"\",\n    \"timeline\": \"\"\n  },\n  \"lead_score\": 0,\n  \"lead_status\": \"new | qualified | support | human_handoff\",\n  \"knowledge_used\": [],\n  \"confidence\": 0\n}\n\nLEAD SCORING\n0-100. Increase for clear purchase intent, specific product/service interest, budget, or timeline. Never fabricate contact data. Empty strings mean unknown.\n\nHUMAN HANDOFF\nWhen route=human, keep the customer-facing response concise and reassuring that a human representative will take over. Do not expose internal routing details."
+        }
+      },
+      "id": "fc473384-0b6c-4d53-a9e6-8ff67fc4a1ac",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        720,
+        1008
+      ],
+      "typeVersion": 3.1
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format the parsed AI response for Facebook Messenger.\nconst parsed = $('Parse AI Decision & Lead Data').first().json;\nconst userId = parsed.userId;\nconst pageId = parsed.pageId;\n\nlet formattedResponse = String(parsed.response || '').trim();\nif (parsed.needs_human && !formattedResponse) {\n  formattedResponse = 'Thanks for your message. A human support representative will take over from here.';\n}\nif (!formattedResponse) {\n  formattedResponse = 'Thanks for your message. How can I help you today?';\n}\n\n// Messenger has a practical per-message character limit; keep a safe margin.\nif (formattedResponse.length > 1900) {\n  formattedResponse = formattedResponse.substring(0, 1897) + '...';\n}\n\nformattedResponse = formattedResponse\n  .replace(/\\*\\*(.+?)\\*\\*/g, '$1')\n  .replace(/\\*(.+?)\\*/g, '$1')\n  .replace(/```[\\s\\S]*?```/g, (match) => match.replace(/```\\w*\\n?/g, ''))\n  .replace(/`(.+?)`/g, '$1');\n\nreturn {\n  json: {\n    userId,\n    pageId,\n    response: formattedResponse,\n    intent: parsed.intent,\n    route: parsed.route,\n    needs_human: parsed.needs_human\n  }\n};"
+      },
+      "id": "4d361035-8bb8-48ac-ba2e-189080a2793d",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1888,
+        960
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v26.0/me/messages",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"recipient\": {\n    \"id\": \"{{ $json.userId }}\"\n  },\n  \"messaging_type\": \"RESPONSE\",\n  \"message\": {\n    \"text\": {{ JSON.stringify($json.response) }}\n  }\n}",
+        "options": {}
+      },
+      "id": "88013638-21fe-4666-8471-6cf93b2d586f",
+      "name": "Send Response to User",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2160,
+        960
+      ],
+      "typeVersion": 4.2,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "15d09f01-0209-441b-8ad7-240110267a7d",
+      "name": "Success",
+      "type": "n8n-nodes-base.set",
+      "position": [
+        2384,
+        960
+      ],
+      "typeVersion": 3.4
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "messenger_business_data"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "active",
+              "keyValue": true
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "8ecef091-5149-4f63-ba1a-665fb18c0fe6",
+      "name": "Load Business Knowledge Base",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        1008
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI JSON, normalize intent/lead data, persist a fast customer profile cache,\n// and activate/deactivate a temporary human-handoff pause.\nconst raw = $input.first().json.output ?? $input.first().json.text ?? '';\nlet parsed;\ntry {\n  const cleaned = String(raw)\n    .replace(/^```json\\s*/i, '')\n    .replace(/^```\\s*/i, '')\n    .replace(/\\s*```$/i, '')\n    .trim();\n  const start = cleaned.indexOf('{');\n  const end = cleaned.lastIndexOf('}');\n  const candidate = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;\n  parsed = JSON.parse(candidate);\n} catch (error) {\n  parsed = {\n    response: 'I’m sorry, but I need a moment to get a support specialist to help with that.',\n    intent: 'other',\n    route: 'human',\n    needs_human: true,\n    handoff_reason: 'AI output was invalid JSON; safe fallback applied.',\n    lead: {},\n    lead_score: 0,\n    lead_status: 'human_handoff',\n    knowledge_used: [],\n    confidence: 0\n  };\n}\n\nconst base = $('Retrieve Batched Messages').first().json;\nconst userId = String(base.userId || '');\nconst pageId = String(base.pageId || '');\nconst sessionKey = `${userId}:${pageId}`;\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.customerProfiles) staticData.customerProfiles = {};\nif (!staticData.handoffSessions) staticData.handoffSessions = {};\n\nconst previousProfile = staticData.customerProfiles[sessionKey] || base.customerProfile || {};\nconst lead = parsed.lead && typeof parsed.lead === 'object' ? parsed.lead : {};\nconst rawIntent = String(parsed.intent || 'other').trim().toLowerCase();\nconst knownIntents = new Set(['sales','product_inquiry','pricing','order','booking','support','complaint','refund','faq','human_request','spam','other']);\nconst intent = knownIntents.has(rawIntent) ? rawIntent : 'other';\n\nconst explicitHuman = Boolean(parsed.needs_human) || String(parsed.route || '').toLowerCase() === 'human' || intent === 'human_request' || intent === 'complaint' || intent === 'refund';\nconst salesIntents = new Set(['sales','product_inquiry','pricing','booking']);\nconst route = explicitHuman ? 'human' : (salesIntents.has(intent) ? 'sales' : 'support');\n\nconst scoreInput = Number(parsed.lead_score ?? lead.lead_score ?? 0);\nconst newScore = Math.max(0, Math.min(100, Number.isFinite(scoreInput) ? scoreInput : 0));\nconst configRows = $('Load Business Knowledge Base').all().map(i => i.json || {}).filter(r => r.record_type === 'config');\nconst config = {};\nfor (const row of configRows) {\n  const key = String(row.category || row.record_key || '').trim();\n  if (key) config[key] = String(row.content ?? '').trim();\n}\nconst qualifiedThreshold = Math.max(0, Math.min(100, Number(config.qualified_lead_score || 70)));\nconst handoffMinutes = Math.max(5, Math.min(1440, Number(config.handoff_pause_minutes || 30)));\n\nconst nonEmpty = (v, fallback = '') => {\n  const value = String(v ?? '').trim();\n  return value || String(fallback ?? '').trim();\n};\nconst mergedLead = {\n  name: nonEmpty(lead.name, previousProfile.name),\n  email: nonEmpty(lead.email, previousProfile.email),\n  phone: nonEmpty(lead.phone, previousProfile.phone),\n  interest: nonEmpty(lead.interest, previousProfile.interest),\n  budget: nonEmpty(lead.budget, previousProfile.budget),\n  timeline: nonEmpty(lead.timeline, previousProfile.timeline),\n  lead_score: Math.max(newScore, Number(previousProfile.lead_score) || 0)\n};\n\nlet leadStatus = String(parsed.lead_status || '').trim().toLowerCase();\nif (explicitHuman) leadStatus = 'human_handoff';\nelse if (mergedLead.lead_score >= qualifiedThreshold) leadStatus = 'qualified';\nelse if (route === 'support') leadStatus = 'support';\nelse leadStatus = leadStatus === 'qualified' ? 'qualified' : 'new';\n\nconst mergedProfile = {\n  ...mergedLead,\n  intent,\n  route,\n  lead_status: leadStatus,\n  last_message: String(base.combinedMessage || ''),\n  last_response: String(parsed.response || ''),\n  needs_human: explicitHuman,\n  updated_at: new Date().toISOString()\n};\nstaticData.customerProfiles[sessionKey] = mergedProfile;\n\nif (explicitHuman) {\n  staticData.handoffSessions[sessionKey] = {\n    until: Date.now() + handoffMinutes * 60 * 1000,\n    reason: String(parsed.handoff_reason || 'Human assistance requested or required.'),\n    createdAt: Date.now()\n  };\n} else {\n  delete staticData.handoffSessions[sessionKey];\n}\n\nreturn {\n  json: {\n    ...base,\n    business_config: {\n      qualified_lead_score: qualifiedThreshold,\n      handoff_pause_minutes: handoffMinutes,\n      human_handoff_webhook_url: String(config.human_handoff_webhook_url || '').trim(),\n      business_name: String(config.business_name || '').trim()\n    },\n    response: String(parsed.response || '').trim(),\n    intent,\n    route,\n    needs_human: explicitHuman,\n    handoff_reason: String(parsed.handoff_reason || (explicitHuman ? 'Human assistance requested or required.' : '')).trim(),\n    lead: mergedLead,\n    lead_status: leadStatus,\n    knowledge_used: Array.isArray(parsed.knowledge_used) ? parsed.knowledge_used : [],\n    confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0))\n  }\n};"
+      },
+      "id": "37b85eaf-6ea6-4bd1-ac94-0018fb6e7912",
+      "name": "Parse AI Decision & Lead Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        1008
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "messenger_business_data"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "record_type",
+              "keyValue": "customer"
+            },
+            {
+              "keyName": "user_id",
+              "keyValue": "={{ $('Parse AI Decision & Lead Data').first().json.userId }}"
+            },
+            {
+              "keyName": "page_id",
+              "keyValue": "={{ $('Parse AI Decision & Lead Data').first().json.pageId }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "record_type": "customer",
+            "record_key": "={{ $('Parse AI Decision & Lead Data').first().json.userId + ':' + $('Parse AI Decision & Lead Data').first().json.pageId }}",
+            "category": "customer_profile",
+            "content": "={{ JSON.stringify($('Parse AI Decision & Lead Data').first().json.lead) }}",
+            "active": false,
+            "user_id": "={{ $('Parse AI Decision & Lead Data').first().json.userId }}",
+            "page_id": "={{ $('Parse AI Decision & Lead Data').first().json.pageId }}",
+            "customer_name": "={{ $('Parse AI Decision & Lead Data').first().json.lead.name }}",
+            "email": "={{ $('Parse AI Decision & Lead Data').first().json.lead.email }}",
+            "phone": "={{ $('Parse AI Decision & Lead Data').first().json.lead.phone }}",
+            "interest": "={{ $('Parse AI Decision & Lead Data').first().json.lead.interest }}",
+            "budget": "={{ $('Parse AI Decision & Lead Data').first().json.lead.budget }}",
+            "timeline": "={{ $('Parse AI Decision & Lead Data').first().json.lead.timeline }}",
+            "intent": "={{ $('Parse AI Decision & Lead Data').first().json.intent }}",
+            "route": "={{ $('Parse AI Decision & Lead Data').first().json.route }}",
+            "lead_score": "={{ $('Parse AI Decision & Lead Data').first().json.lead.lead_score }}",
+            "lead_status": "={{ $('Parse AI Decision & Lead Data').first().json.lead_status }}",
+            "last_message": "={{ $('Parse AI Decision & Lead Data').first().json.combinedMessage }}",
+            "last_response": "={{ $('Parse AI Decision & Lead Data').first().json.response }}",
+            "needs_human": "={{ $('Parse AI Decision & Lead Data').first().json.needs_human }}",
+            "handoff_reason": "={{ $('Parse AI Decision & Lead Data').first().json.handoff_reason }}",
+            "updated_at": "={{ new Date().toISOString() }}"
+          },
+          "schema": [
+            {
+              "id": "record_type",
+              "displayName": "record_type",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "record_key",
+              "displayName": "record_key",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "content",
+              "displayName": "content",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "active",
+              "displayName": "active",
+              "required": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "page_id",
+              "displayName": "page_id",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "customer_name",
+              "displayName": "customer_name",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "interest",
+              "displayName": "interest",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "budget",
+              "displayName": "budget",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "timeline",
+              "displayName": "timeline",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "route",
+              "displayName": "route",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lead_score",
+              "displayName": "lead_score",
+              "required": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lead_status",
+              "displayName": "lead_status",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_message",
+              "displayName": "last_message",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_response",
+              "displayName": "last_response",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "needs_human",
+              "displayName": "needs_human",
+              "required": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "handoff_reason",
+              "displayName": "handoff_reason",
+              "required": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "display": true,
+              "type": "date",
+              "readOnly": false,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2c6de0dc-f0b9-4a61-be4f-21a15590491d",
+      "name": "Upsert Customer & Lead Profile",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1376,
+        1008
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "route-human",
+                    "leftValue": "={{ $('Parse AI Decision & Lead Data').first().json.route }}",
+                    "rightValue": "human",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "human"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "route-sales",
+                    "leftValue": "={{ $('Parse AI Decision & Lead Data').first().json.route }}",
+                    "rightValue": "sales",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "sales"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "route-support",
+                    "leftValue": "={{ $('Parse AI Decision & Lead Data').first().json.route }}",
+                    "rightValue": "support",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "support"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "fallback"
+        }
+      },
+      "id": "43243734-df17-42c1-989a-9e52d7d585b3",
+      "name": "Intent Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1568,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Parse AI Decision & Lead Data').first().json.business_config.human_handoff_webhook_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  event: 'messenger_human_handoff',\n  business: $('Parse AI Decision & Lead Data').first().json.business_config.business_name || '',\n  user_id: $('Parse AI Decision & Lead Data').first().json.userId,\n  page_id: $('Parse AI Decision & Lead Data').first().json.pageId,\n  intent: $('Parse AI Decision & Lead Data').first().json.intent,\n  route: 'human',\n  reason: $('Parse AI Decision & Lead Data').first().json.handoff_reason,\n  customer: $('Parse AI Decision & Lead Data').first().json.lead,\n  lead_status: $('Parse AI Decision & Lead Data').first().json.lead_status,\n  message: $('Parse AI Decision & Lead Data').first().json.combinedMessage,\n  ai_response: $('Parse AI Decision & Lead Data').first().json.response\n}) }}",
+        "options": {}
+      },
+      "id": "98f2ed2b-cea5-449f-bd75-726112caabc4",
+      "name": "Notify Human Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1776,
+        624
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Decision & Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversation Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook Verification Webhook": {
+      "main": [
+        [
+          {
+            "node": "Is Token Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Token Valid?": {
+      "main": [
+        [
+          {
+            "node": "Respond with Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Forbidden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook Message Webhook": {
+      "main": [
+        []
+      ]
+    },
+    "Acknowledge Event": {
+      "main": [
+        [
+          {
+            "node": "Filter Valid Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Valid Messages": {
+      "main": [
+        [
+          {
+            "node": "Store Message for Batching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Message for Batching": {
+      "main": [
+        [
+          {
+            "node": "Send Seen Indicator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Seen Indicator": {
+      "main": [
+        [
+          {
+            "node": "Wait 3 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Retrieve Batched Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve Batched Messages": {
+      "main": [
+        [
+          {
+            "node": "Has Messages to Process?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Messages to Process?": {
+      "main": [
+        [
+          {
+            "node": "Send Typing Indicator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Typing Indicator": {
+      "main": [
+        [
+          {
+            "node": "Load Business Knowledge Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Business Knowledge Base": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Decision & Lead Data": {
+      "main": [
+        [
+          {
+            "node": "Upsert Customer & Lead Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Customer & Lead Profile": {
+      "main": [
+        [
+          {
+            "node": "Intent Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Router": {
+      "main": [
+        [
+          {
+            "node": "Notify Human Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Human Agent": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Send Response to User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Response to User": {
+      "main": [
+        [
+          {
+            "node": "Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "db759572-330e-43b5-878e-fda055e51c92",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "97039511d7868ab0b903b5b74dcd4abfc433b51b62d833c08dd157497493ed2a"
+  },
+  "nodeGroups": [],
+  "id": "aCQ4AbVzNX4YrkuI",
+  "tags": []
+}
