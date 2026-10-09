@@ -460,39 +460,6 @@ Dependencies: an n8n instance with Data Tables and AI Agent nodes, an OpenAI acc
 
 ---
 
-## ⚠️ Limitations
-
-- Depends on correct Facebook, OpenAI and n8n credential setup.
-- Depends on the quality and completeness of the business knowledge rows.
-- AI output quality varies; JSON failures are handled but replies are not guaranteed accurate.
-- The handoff pause, batches, dedupe and profile cache live in workflow static data, which n8n persists only for production executions.
-- Memory and cache behavior depend on the n8n instance.
-- Handoff notification depends on an external endpoint being configured.
-- No request signature validation is implemented.
-
-<details>
-<summary><b>Export Notes: wiring to verify before activation</b></summary>
-
-<br>
-
-- `Facebook Message Webhook` has no outgoing connection, and `Acknowledge Event` has no incoming connection. Connect them so message events reach the pipeline.
-- The message webhook is exported with multiple methods enabled but an empty method list. Confirm it accepts POST.
-- The three Graph API HTTP nodes have no authentication configured in the export.
-- `knowledge_used` and `confidence` are passed through the workflow but are not stored in the Data Table.
-
-</details>
-
----
-
-## 📁 Repository Structure
-
-```text
-.
-├── README.md
-├── Smart AI Customer Support, Lead Generation & Human Handoff System (1).json
-└── screenshots/
-    └── workflow-overview.png
-```
 
 ---
 
